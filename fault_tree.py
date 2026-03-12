@@ -1,681 +1,866 @@
 """
-Fault Tree Analysis Tool v2 — Streamlit
-=========================================
-Rebuilt to match real FTA diagrams:
-- Proper node ID system (SF-01, FF-42, IF-100)
-- Multiple hazards per project (tabs)
-- Calculation audit trail / formula box
-- Node annotations & status flags
-- Equal / weighted SF distribution
-- Full save/load JSON
-- CSV export with audit trail
+Fault Tree Analysis Tool v3
+============================
+Full interactive visual tree built with D3.js inside Streamlit via st.components.
+Click any node in the tree to select and edit it in the sidebar panel.
 """
 
 import streamlit as st
-import json
-import uuid
-import math
-import copy
+import json, uuid, math, copy
 from datetime import datetime
 import pandas as pd
+import streamlit.components.v1 as components
 
-# ─── page config ──────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="FTA Tool",
-    page_icon="⚠",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="FTA Tool v3", page_icon="⚠", layout="wide",
+                   initial_sidebar_state="expanded")
 
-# ─── CSS ──────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
-
-html, body, [class*="css"]  { font-family: 'IBM Plex Sans', sans-serif; background:#08080f; color:#c8c8d8; }
-
-/* ── cards ── */
-.hazard-card { background:#110820; border:2px solid #7c3aed; border-radius:14px; padding:18px 20px; margin-bottom:18px; box-shadow:0 0 28px #7c3aed30; }
-.sf-card     { background:#071220; border:1.5px solid #0ea5e9; border-radius:11px; padding:14px 16px; margin-bottom:14px; box-shadow:0 0 14px #0ea5e922; }
-.ff-card     { background:#081a0e; border:1px solid #16a34a; border-radius:9px; padding:10px 12px; margin-bottom:10px; box-shadow:0 0 10px #16a34a18; }
-.if-card     { background:#1c1000; border:1px solid #d97706; border-radius:7px; padding:8px 10px; margin-bottom:6px; box-shadow:0 0 7px #d9770618; }
-.audit-card  { background:#0a0a18; border:1px solid #334155; border-radius:10px; padding:14px 18px; font-family:'IBM Plex Mono',monospace; font-size:12px; line-height:1.8; }
-.note-tbc    { background:#1a1200; border:1px solid #ca8a04; border-radius:6px; padding:3px 8px; font-size:11px; color:#fde68a; display:inline-block; }
-.note-reword { background:#1a0800; border:1px solid #ea580c; border-radius:6px; padding:3px 8px; font-size:11px; color:#fed7aa; display:inline-block; }
-.note-ok     { background:#052e16; border:1px solid #16a34a; border-radius:6px; padding:3px 8px; font-size:11px; color:#86efac; display:inline-block; }
-
-/* ── badges ── */
-.badge-ok    { background:#052e16; color:#4ade80; border:1px solid #16a34a; border-radius:10px; padding:1px 9px; font-size:11px; font-weight:700; }
-.badge-over  { background:#2d0707; color:#f87171; border:1px solid #dc2626; border-radius:10px; padding:1px 9px; font-size:11px; font-weight:700; }
-.badge-sf    { background:#0a1628; color:#38bdf8; border:1px solid #0ea5e9; border-radius:5px; padding:1px 7px; font-size:10px; font-weight:800; letter-spacing:1px; }
-.badge-ff    { background:#081a0e; color:#4ade80; border:1px solid #16a34a; border-radius:5px; padding:1px 7px; font-size:10px; font-weight:800; letter-spacing:1px; }
-.badge-if    { background:#1c1000; color:#fbbf24; border:1px solid #d97706; border-radius:5px; padding:1px 7px; font-size:10px; font-weight:800; letter-spacing:1px; }
-.badge-gate-or  { background:#2d0a0a; color:#f87171; border:1px solid #f87171; border-radius:4px; padding:1px 7px; font-size:10px; font-weight:800; letter-spacing:1.5px; }
-.badge-gate-and { background:#0a1a2d; color:#60a5fa; border:1px solid #60a5fa; border-radius:4px; padding:1px 7px; font-size:10px; font-weight:800; letter-spacing:1.5px; }
-
-/* ── typography ── */
-.node-id     { font-family:'IBM Plex Mono',monospace; font-size:11px; font-weight:700; color:#94a3b8; letter-spacing:1px; }
-.node-label  { font-size:13px; font-weight:600; color:#e2e8f0; }
-.prob-value  { font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:700; }
-.prob-target { font-family:'IBM Plex Mono',monospace; font-size:11px; color:#64748b; }
-.section-title { font-size:11px; font-weight:800; letter-spacing:2px; color:#475569; margin-bottom:8px; }
-.mono        { font-family:'IBM Plex Mono',monospace; }
-
-/* ── metrics ── */
-.big-metric  { font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:800; }
-.ok-color    { color:#4ade80; }
-.over-color  { color:#f87171; }
-.muted-color { color:#64748b; }
-
-/* ── streamlit overrides ── */
-.stApp { background:#08080f; }
-[data-testid="stSidebar"] { background:#0d0d1a; border-right:1px solid #1e1e3a; }
-div[data-testid="stExpander"] { border:1px solid #1e1e3a !important; border-radius:10px !important; background:#0d0d1a !important; }
-.stButton>button { border-radius:7px; font-weight:600; font-size:12px; }
-.stTextInput>div>div>input { background:#0a0a18 !important; color:#e2e8f0 !important; border-color:#1e1e3a !important; }
-.stNumberInput>div>div>input { background:#0a0a18 !important; color:#e2e8f0 !important; font-family:'IBM Plex Mono',monospace !important; }
-.stSelectbox>div>div { background:#0a0a18 !important; color:#e2e8f0 !important; }
-.stTextArea>div>div>textarea { background:#0a0a18 !important; color:#e2e8f0 !important; }
-.stTabs [data-baseweb="tab-list"] { background:#0d0d1a; border-bottom:1px solid #1e1e3a; }
-.stTabs [data-baseweb="tab"] { color:#64748b; font-weight:600; }
-.stTabs [aria-selected="true"] { color:#e2e8f0 !important; border-bottom:2px solid #7c3aed !important; }
-#MainMenu {visibility:hidden;} footer {visibility:hidden;}
-hr { border-color:#1e1e3a !important; }
+html,body,[class*="css"]{font-family:'IBM Plex Sans',sans-serif;background:#08080f;color:#c8c8d8;}
+.stApp{background:#08080f;}
+[data-testid="stSidebar"]{background:#0d0d1a;border-right:1px solid #1e1e3a;}
+.stButton>button{border-radius:7px;font-weight:600;font-size:12px;}
+.stTextInput>div>div>input,.stNumberInput>div>div>input{background:#0a0a18!important;color:#e2e8f0!important;font-family:'IBM Plex Mono',monospace!important;border-color:#1e1e3a!important;}
+.stSelectbox>div>div{background:#0a0a18!important;color:#e2e8f0!important;}
+.stTextArea>div>div>textarea{background:#0a0a18!important;color:#e2e8f0!important;}
+.stTabs [data-baseweb="tab-list"]{background:#0d0d1a;border-bottom:1px solid #1e1e3a;}
+.stTabs [data-baseweb="tab"]{color:#64748b;font-weight:600;}
+.stTabs [aria-selected="true"]{color:#e2e8f0!important;border-bottom:2px solid #7c3aed!important;}
+.node-edit-card{background:#0f0f20;border:1px solid #1e1e3a;border-radius:12px;padding:16px;margin-bottom:12px;}
+.stat-chip{background:#0d0d1a;border:1px solid #1e1e3a;border-radius:8px;padding:6px 12px;display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:12px;}
+.ok-color{color:#4ade80;} .over-color{color:#f87171;} .muted{color:#64748b;}
+#MainMenu{visibility:hidden;}footer{visibility:hidden;}
 </style>
 """, unsafe_allow_html=True)
 
 # ─── engine ───────────────────────────────────────────────────────────────────
 def new_id(): return str(uuid.uuid4())[:8]
 
-def fmt(v, digits=2):
-    if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))): return "–"
+def fmt(v, d=2):
+    if v is None or (isinstance(v,float) and (math.isnan(v) or math.isinf(v))): return "–"
     if v == 0: return "0"
-    return f"{v:.{digits}e}"
+    return f"{v:.{d}e}"
 
 def calc_node(node):
-    children = node.get("children", [])
-    if not children:
-        return node.get("value")
-    vals = [calc_node(c) for c in children]
-    vals = [v for v in vals if v is not None and math.isfinite(v)]
+    ch = node.get("children",[])
+    if not ch: return node.get("value")
+    vals = [v for v in (calc_node(c) for c in ch) if v is not None and math.isfinite(v)]
     if not vals: return node.get("value")
-    if node.get("gate", "OR") == "OR":
-        return sum(vals)
-    else:
-        r = 1.0
-        for v in vals: r *= v
-        return r
+    if node.get("gate","OR")=="OR": return sum(vals)
+    r=1.0
+    for v in vals: r*=v
+    return r
 
 def propagate_targets(node, target):
-    node = copy.deepcopy(node)
-    node["_target"] = target
-    children = node.get("children", [])
-    if not children: return node
-    gate = node.get("gate", "OR")
-    n = len(children)
-    if gate == "OR":
-        child_t = target / n
-    else:
-        child_t = max(target, 1e-300) ** (1.0 / n)
-    node["children"] = [propagate_targets(c, child_t) for c in children]
+    node=copy.deepcopy(node); node["_target"]=target
+    ch=node.get("children",[])
+    if not ch: return node
+    n=len(ch); gate=node.get("gate","OR")
+    ct = target/n if gate=="OR" else max(target,1e-300)**(1.0/n)
+    node["children"]=[propagate_targets(c,ct) for c in ch]
     return node
 
 def redistribute(tree, mode="equal"):
-    sfs = tree.get("children", [])
+    tree=copy.deepcopy(tree); sfs=tree.get("children",[])
     if not sfs: return tree
-    hazard_t = tree.get("value", 1e-7)
-    tree = copy.deepcopy(tree)
-    if mode == "equal":
-        sf_t = hazard_t / len(sfs)
+    ht=tree.get("value",1e-7)
+    if mode=="equal":
+        sft=ht/len(sfs)
         for sf in tree["children"]:
-            sf["weight"] = 1
-            sf["_target"] = sf_t
-            ffs = sf.get("children", [])
-            ff_t = sf_t / max(len(ffs), 1)
-            sf["children"] = [propagate_targets(ff, ff_t) for ff in ffs]
+            sf["weight"]=1; sf["_target"]=sft
+            ffs=sf.get("children",[]); fft=sft/max(len(ffs),1)
+            sf["children"]=[propagate_targets(ff,fft) for ff in ffs]
     else:
-        total_w = sum(sf.get("weight", 1) for sf in sfs) or 1
+        tw=sum(sf.get("weight",1) for sf in sfs) or 1
         for sf in tree["children"]:
-            sf_t = hazard_t * (sf.get("weight", 1) / total_w)
-            sf["_target"] = sf_t
-            ffs = sf.get("children", [])
-            ff_t = sf_t / max(len(ffs), 1)
-            sf["children"] = [propagate_targets(ff, ff_t) for ff in ffs]
+            sft=ht*(sf.get("weight",1)/tw); sf["_target"]=sft
+            ffs=sf.get("children",[]); fft=sft/max(len(ffs),1)
+            sf["children"]=[propagate_targets(ff,fft) for ff in ffs]
     return tree
 
-def build_audit_trail(tree):
-    """Build step-by-step calculation text matching the blue box in your diagram."""
-    lines = []
-    hazard_calc = calc_node(tree)
-    lines.append(f"{'─'*52}")
-    lines.append(f"HAZARD: {tree.get('label','Hazard')}  [gate: {tree.get('gate','OR')}]")
-    lines.append(f"Target  : {fmt(tree.get('value'))}")
-    lines.append(f"{'─'*52}")
-    for sf in tree.get("children", []):
-        sf_calc = calc_node(sf)
-        sf_ok = "✓" if sf_calc is not None and sf.get("_target") and sf_calc <= sf["_target"]*1.001 else "✗"
-        lines.append(f"\n{sf.get('node_id','SF-??')}  {sf.get('label','')}")
-        lines.append(f"  gate   : {sf.get('gate','OR')}")
-        lines.append(f"  calc   : {fmt(sf_calc)}   target: {fmt(sf.get('_target'))}  {sf_ok}")
-        for ff in sf.get("children", []):
-            ff_calc = calc_node(ff)
-            ff_ok = "✓" if ff_calc is not None and ff.get("_target") and ff_calc <= ff["_target"]*1.001 else "✗"
-            lines.append(f"  ├─ {ff.get('node_id','FF-??')}  {ff.get('label','')}")
-            lines.append(f"  │   gate: {ff.get('gate','OR')}  calc: {fmt(ff_calc)}  tgt: {fmt(ff.get('_target'))}  {ff_ok}")
-            for ifn in ff.get("children", []):
-                lines.append(f"  │   └─ {ifn.get('node_id','IF-??')}  {ifn.get('label','')}  P={fmt(ifn.get('value'))}")
-    lines.append(f"\n{'─'*52}")
-    lines.append(f"TOTAL CALCULATED : {fmt(hazard_calc)}")
-    lines.append(f"HAZARD TARGET    : {fmt(tree.get('value'))}")
-    if hazard_calc is not None and tree.get("value"):
-        pct = hazard_calc / tree["value"] * 100
-        lines.append(f"BUDGET USED      : {pct:.1f}%  {'✓ WITHIN TARGET' if pct<=100 else '✗ EXCEEDS TARGET'}")
-    return "\n".join(lines)
+def find_node(tree, node_id):
+    if tree.get("id")==node_id: return tree
+    for c in tree.get("children",[]):
+        r=find_node(c,node_id)
+        if r: return r
+    return None
+
+def update_node_in_tree(tree, node_id, patch):
+    if tree.get("id")==node_id:
+        tree=copy.deepcopy(tree); tree.update(patch); return tree
+    if not tree.get("children"): return tree
+    tree=copy.deepcopy(tree)
+    tree["children"]=[update_node_in_tree(c,node_id,patch) for c in tree["children"]]
+    return tree
+
+def delete_node_from_tree(tree, node_id):
+    if not tree.get("children"): return tree
+    tree=copy.deepcopy(tree)
+    tree["children"]=[delete_node_from_tree(c,node_id) for c in tree["children"] if c.get("id")!=node_id]
+    return tree
+
+def add_child(tree, parent_id, child):
+    if tree.get("id")==parent_id:
+        tree=copy.deepcopy(tree); tree.setdefault("children",[]).append(child); return tree
+    if not tree.get("children"): return tree
+    tree=copy.deepcopy(tree)
+    tree["children"]=[add_child(c,parent_id,child) for c in tree["children"]]
+    return tree
 
 # ─── factories ────────────────────────────────────────────────────────────────
-_sf_counter = [0]
-_ff_counter = [0]
-_if_counter = [0]
-
-def make_if(node_id=None, label="Initial Failure", value=1e-5):
-    _if_counter[0] += 1
-    nid = node_id or f"IF-{_if_counter[0]:03d}"
-    return {"id": new_id(), "type": "IF", "node_id": nid, "label": label,
-            "value": value, "children": [], "gate": "OR", "note": "", "flag": "none"}
-
-def make_ff(node_id=None, label="Following Failure"):
-    _ff_counter[0] += 1
-    nid = node_id or f"FF-{_ff_counter[0]:02d}"
-    return {"id": new_id(), "type": "FF", "node_id": nid, "label": label,
-            "gate": "OR", "children": [make_if(), make_if()], "value": None,
-            "note": "", "flag": "none"}
-
-def make_sf(node_id=None, label="System Failure"):
-    _sf_counter[0] += 1
-    nid = node_id or f"SF-{_sf_counter[0]:02d}"
-    return {"id": new_id(), "type": "SF", "node_id": nid, "label": label,
-            "gate": "OR", "weight": 1,
-            "children": [make_ff(), make_ff(), make_ff()],
-            "value": None, "note": "", "flag": "none"}
-
-def build_default_tree(hazard_id="H-01", hazard_label="Toxic Hazard"):
-    _sf_counter[0] = 0; _ff_counter[0] = 0; _if_counter[0] = 0
-    tree = {
-        "id": new_id(), "type": "HAZARD",
-        "node_id": hazard_id, "label": hazard_label,
-        "value": 1e-7, "gate": "OR",
-        "children": [make_sf(), make_sf(), make_sf()],
-        "note": "", "flag": "none"
-    }
-    return redistribute(tree, "equal")
+def make_if(nid="IF-001",label="Initial Failure",value=1e-5):
+    return {"id":new_id(),"type":"IF","node_id":nid,"label":label,"value":value,
+            "children":[],"gate":"OR","note":"","flag":"none"}
+def make_ff(nid="FF-01",label="Following Failure"):
+    return {"id":new_id(),"type":"FF","node_id":nid,"label":label,"gate":"OR",
+            "children":[make_if("IF-001","Initial Failure A"),make_if("IF-002","Initial Failure B")],
+            "value":None,"note":"","flag":"none"}
+def make_sf(nid="SF-01",label="System Failure"):
+    return {"id":new_id(),"type":"SF","node_id":nid,"label":label,"gate":"OR","weight":1,
+            "children":[make_ff("FF-01","Following Failure 1"),make_ff("FF-02","Following Failure 2")],
+            "value":None,"note":"","flag":"none"}
+def build_default(hid="H-01",hlabel="Toxic Hazard"):
+    tree={"id":new_id(),"type":"HAZARD","node_id":hid,"label":hlabel,
+          "value":1e-7,"gate":"OR","children":[make_sf("SF-01","System Failure 1"),
+           make_sf("SF-02","System Failure 2"),make_sf("SF-03","System Failure 3")],
+          "note":"","flag":"none"}
+    return redistribute(tree,"equal")
 
 # ─── session state ────────────────────────────────────────────────────────────
-if "project_name" not in st.session_state:
-    st.session_state.project_name = "My FTA Project"
-if "hazards" not in st.session_state:
-    st.session_state.hazards = [build_default_tree("H-01", "Toxic Hazard")]
-if "dist_mode" not in st.session_state:
-    st.session_state.dist_mode = "equal"
-if "active_hazard" not in st.session_state:
-    st.session_state.active_hazard = 0
+if "project_name" not in st.session_state: st.session_state.project_name="My FTA Project"
+if "hazards" not in st.session_state: st.session_state.hazards=[build_default()]
+if "dist_mode" not in st.session_state: st.session_state.dist_mode="equal"
+if "active_h" not in st.session_state: st.session_state.active_h=0
+if "selected_node_id" not in st.session_state: st.session_state.selected_node_id=None
 
-def get_hazards(): return st.session_state.hazards
-def set_hazards(h): st.session_state.hazards = h
+FLAG_OPTIONS={"none":"—","ok":"✓ Confirmed","tbc":"TBC","reword":"Reword Required"}
 
-# ─── helpers ──────────────────────────────────────────────────────────────────
-def status_html(calc, target):
-    if calc is None or target is None: return ""
-    ok = calc <= target * 1.001
-    return f'<span class="badge-{"ok" if ok else "over"}">{"✓ OK" if ok else "✗ OVER"}</span>'
+def get_tree(): return st.session_state.hazards[st.session_state.active_h]
+def set_tree(t):
+    st.session_state.hazards[st.session_state.active_h]=t
 
-def gate_html(gate):
-    cls = "badge-gate-or" if gate == "OR" else "badge-gate-and"
-    return f'<span class="{cls}">{gate}</span>'
+# ─── D3 VISUAL TREE HTML ──────────────────────────────────────────────────────
+def build_tree_html(tree_data, selected_id=None):
+    tree_json = json.dumps(tree_data)
+    selected_json = json.dumps(selected_id)
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * {{ box-sizing:border-box; margin:0; padding:0; }}
+  body {{ background:#08080f; font-family:'IBM Plex Mono',monospace; overflow:hidden; }}
+  #tree-container {{ width:100%; height:100%; position:relative; overflow:hidden; cursor:grab; }}
+  #tree-container.dragging {{ cursor:grabbing; }}
+  svg {{ width:100%; height:100%; }}
 
-def flag_html(flag):
-    if flag == "tbc":    return '<span class="note-tbc">TBC</span>'
-    if flag == "reword": return '<span class="note-reword">REWORD</span>'
-    if flag == "ok":     return '<span class="note-ok">CONFIRMED</span>'
-    return ""
+  .node-hazard rect  {{ fill:#1a0a35; stroke:#7c3aed; stroke-width:2; rx:10; }}
+  .node-SF rect      {{ fill:#071525; stroke:#0ea5e9; stroke-width:1.5; }}
+  .node-FF rect      {{ fill:#081a0e; stroke:#16a34a; stroke-width:1; }}
+  .node-IF rect      {{ fill:#1c1000; stroke:#d97706; stroke-width:1; }}
 
-FLAG_OPTIONS = {"none": "—", "ok": "✓ Confirmed", "tbc": "TBC", "reword": "Reword Required"}
+  .node-hazard rect.selected {{ stroke:#c084fc; stroke-width:3; filter:drop-shadow(0 0 8px #7c3aed); }}
+  .node-SF rect.selected     {{ stroke:#38bdf8; stroke-width:2.5; filter:drop-shadow(0 0 6px #0ea5e9); }}
+  .node-FF rect.selected     {{ stroke:#4ade80; stroke-width:2; filter:drop-shadow(0 0 5px #16a34a); }}
+  .node-IF rect.selected     {{ stroke:#fbbf24; stroke-width:2; filter:drop-shadow(0 0 5px #d97706); }}
+
+  .node-hazard rect:hover    {{ filter:drop-shadow(0 0 10px #7c3aed88); cursor:pointer; }}
+  .node-SF rect:hover        {{ filter:drop-shadow(0 0 8px #0ea5e988); cursor:pointer; }}
+  .node-FF rect:hover        {{ filter:drop-shadow(0 0 6px #16a34a88); cursor:pointer; }}
+  .node-IF rect:hover        {{ filter:drop-shadow(0 0 5px #d9770688); cursor:pointer; }}
+
+  .node-id   {{ font-size:9px; font-weight:700; letter-spacing:1px; fill:#94a3b8; }}
+  .node-label {{ font-size:10px; fill:#e2e8f0; font-weight:500; }}
+  .node-prob  {{ font-size:10px; font-weight:700; font-family:'IBM Plex Mono',monospace; }}
+  .node-target {{ font-size:8px; fill:#64748b; }}
+  .node-gate  {{ font-size:8px; font-weight:800; letter-spacing:1px; }}
+  .node-flag  {{ font-size:8px; font-weight:700; }}
+
+  .link {{ fill:none; stroke:#334155; stroke-width:1.2; }}
+
+  .gate-or  {{ fill:#f87171; }}
+  .gate-and {{ fill:#60a5fa; }}
+  .prob-ok   {{ fill:#4ade80; }}
+  .prob-over {{ fill:#f87171; }}
+  .prob-na   {{ fill:#64748b; }}
+
+  .controls {{ position:absolute; bottom:12px; right:12px; display:flex; gap:6px; z-index:10; }}
+  .ctrl-btn {{
+    background:#0d0d1a; border:1px solid #334155; color:#94a3b8;
+    border-radius:6px; padding:5px 10px; font-size:11px;
+    cursor:pointer; font-family:'IBM Plex Mono',monospace;
+    transition:all 0.15s;
+  }}
+  .ctrl-btn:hover {{ border-color:#7c3aed; color:#c084fc; }}
+
+  .legend {{ position:absolute; top:10px; left:10px; display:flex; gap:10px; z-index:10; }}
+  .leg-item {{ display:flex; align-items:center; gap:5px; font-size:9px; color:#64748b; }}
+  .leg-dot {{ width:8px; height:8px; border-radius:2px; }}
+</style>
+</head>
+<body>
+<div id="tree-container">
+  <svg id="svg"></svg>
+  <div class="legend">
+    <div class="leg-item"><div class="leg-dot" style="background:#7c3aed"></div>Hazard</div>
+    <div class="leg-item"><div class="leg-dot" style="background:#0ea5e9"></div>SF</div>
+    <div class="leg-item"><div class="leg-dot" style="background:#16a34a"></div>FF</div>
+    <div class="leg-item"><div class="leg-dot" style="background:#d97706"></div>IF</div>
+    <div class="leg-item"><div class="leg-dot" style="background:#f87171;border-radius:10px"></div>OR gate</div>
+    <div class="leg-item"><div class="leg-dot" style="background:#60a5fa;border-radius:10px"></div>AND gate</div>
+  </div>
+  <div class="controls">
+    <button class="ctrl-btn" onclick="zoomIn()">＋ Zoom</button>
+    <button class="ctrl-btn" onclick="zoomOut()">－ Zoom</button>
+    <button class="ctrl-btn" onclick="resetView()">⊙ Reset</button>
+    <button class="ctrl-btn" onclick="expandAll()">▼ Expand</button>
+    <button class="ctrl-btn" onclick="collapseAll()">▶ Collapse</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script>
+const RAW_TREE = {tree_json};
+const SELECTED_ID = {selected_json};
+
+// ── node dimensions by type ──
+const NODE_W = {{ HAZARD:200, SF:180, FF:170, IF:155 }};
+const NODE_H = {{ HAZARD:70,  SF:65,  FF:60,  IF:55  }};
+const V_GAP = 60;
+const H_GAP = 20;
+
+// ── calc engine (mirrors Python) ──
+function calcNode(node) {{
+  const ch = (node.children||[]).filter(c=>!c._collapsed);
+  const allCh = node.children||[];
+  if (!allCh.length) return node.value ?? null;
+  const src = node._collapsed ? [] : allCh;
+  const vals = src.map(calcNode).filter(v=>v!==null&&isFinite(v));
+  if (!vals.length) return node.value ?? null;
+  if ((node.gate||"OR")==="OR") return vals.reduce((a,b)=>a+b,0);
+  return vals.reduce((a,b)=>a*b,1);
+}}
+
+function fmtP(v) {{
+  if (v===null||v===undefined||!isFinite(v)) return "–";
+  if (v===0) return "0";
+  return v.toExponential(2);
+}}
+
+// ── tree layout ──
+let treeData = JSON.parse(JSON.stringify(RAW_TREE));
+let collapsed = new Set();
+let svgEl, gMain, zoom;
+let transform = {{ x:40, y:40, k:1 }};
+
+function getVisible(node) {{
+  const n = {{...node, _collapsed: collapsed.has(node.id)}};
+  if (!n._collapsed && node.children) {{
+    n.children = node.children.map(getVisible);
+  }} else {{
+    n._hiddenChildren = node.children;
+    n.children = [];
+  }}
+  return n;
+}}
+
+function computeLayout(root) {{
+  // assign positions using simple recursive layout
+  function measure(node) {{
+    const w = NODE_W[node.type]||160;
+    const h = NODE_H[node.type]||55;
+    node._w = w; node._h = h;
+    if (!node.children||!node.children.length) {{
+      node._subtreeW = w;
+      return;
+    }}
+    node.children.forEach(measure);
+    const totalChildW = node.children.reduce((s,c)=>s+c._subtreeW,0)
+                      + H_GAP*(node.children.length-1);
+    node._subtreeW = Math.max(w, totalChildW);
+  }}
+
+  function place(node, x, y) {{
+    node._x = x; node._y = y;
+    if (!node.children||!node.children.length) return;
+    const totalChildW = node.children.reduce((s,c)=>s+c._subtreeW,0)
+                      + H_GAP*(node.children.length-1);
+    let cx = x - totalChildW/2;
+    for (const ch of node.children) {{
+      place(ch, cx + ch._subtreeW/2, y + node._h + V_GAP);
+      cx += ch._subtreeW + H_GAP;
+    }}
+  }}
+
+  measure(root);
+  place(root, root._subtreeW/2, 0);
+  return root;
+}}
+
+function allNodes(node, arr=[]) {{
+  arr.push(node);
+  (node.children||[]).forEach(c=>allNodes(c,arr));
+  return arr;
+}}
+function allLinks(node, arr=[]) {{
+  (node.children||[]).forEach(c=>{{
+    arr.push({{source:node, target:c}});
+    allLinks(c,arr);
+  }});
+  return arr;
+}}
+
+// ── render ──
+function render() {{
+  const visible = getVisible(treeData);
+  computeLayout(visible);
+
+  const nodes = allNodes(visible);
+  const links = allLinks(visible);
+
+  // bounds
+  const minX = d3.min(nodes, d=>d._x - d._w/2) - 20;
+  const minY = d3.min(nodes, d=>d._y) - 20;
+
+  const svg = d3.select("#svg");
+  const g = svg.select("g.main");
+
+  // ── links ──
+  g.selectAll(".link").data(links, d=>d.source.id+"-"+d.target.id)
+    .join(
+      enter => enter.append("path").attr("class","link").attr("opacity",0)
+        .call(e=>e.transition().duration(300).attr("opacity",1)),
+      update => update,
+      exit => exit.transition().duration(200).attr("opacity",0).remove()
+    )
+    .attr("d", d=>{{
+      const sx=d.source._x, sy=d.source._y+d.source._h;
+      const tx=d.target._x, ty=d.target._y;
+      const my=(sy+ty)/2;
+      return `M${{sx}},${{sy}} C${{sx}},${{my}} ${{tx}},${{my}} ${{tx}},${{ty}}`;
+    }});
+
+  // ── nodes ──
+  const nodeGs = g.selectAll("g.node-group")
+    .data(nodes, d=>d.id)
+    .join(
+      enter => {{
+        const ng = enter.append("g").attr("class", d=>`node-group node-${{d.type}}`)
+          .attr("transform", d=>`translate(${{d._x - d._w/2}},${{d._y}})`)
+          .attr("opacity",0)
+          .on("click", (event, d) => {{
+            event.stopPropagation();
+            nodeClicked(d.id);
+          }});
+        ng.transition().duration(300).attr("opacity",1);
+        ng.append("rect");
+        ng.append("text").attr("class","node-id");
+        ng.append("text").attr("class","node-label");
+        ng.append("text").attr("class","node-prob");
+        ng.append("text").attr("class","node-target");
+        ng.append("text").attr("class","node-gate");
+        ng.append("text").attr("class","node-flag");
+        ng.append("circle").attr("class","collapse-btn");
+        ng.append("text").attr("class","collapse-icon");
+        return ng;
+      }},
+      update => update.transition().duration(300)
+        .attr("transform", d=>`translate(${{d._x - d._w/2}},${{d._y}})`),
+      exit => exit.transition().duration(200).attr("opacity",0).remove()
+    );
+
+  // rect
+  nodeGs.select("rect")
+    .attr("width", d=>d._w).attr("height", d=>d._h)
+    .attr("rx",8)
+    .attr("class", d=> d.id===SELECTED_ID ? "selected" : "");
+
+  // node_id text
+  nodeGs.select("text.node-id")
+    .attr("x",8).attr("y",14)
+    .text(d=>d.node_id||"");
+
+  // label — wrap long text
+  nodeGs.select("text.node-label")
+    .attr("x",8).attr("y",27)
+    .text(d=>{{
+      const max = Math.floor(d._w/6.5);
+      const lbl = d.label||"";
+      return lbl.length>max ? lbl.slice(0,max-1)+"…" : lbl;
+    }});
+
+  // probability
+  nodeGs.select("text.node-prob")
+    .attr("x",8).attr("y",40)
+    .attr("class", d=>{{
+      const calc=calcNode(d), tgt=d._target;
+      const ok = calc!==null && tgt && calc<=tgt*1.001;
+      return "node-prob " + (calc===null?"prob-na": ok?"prob-ok":"prob-over");
+    }})
+    .text(d=>{{
+      const calc=calcNode(d);
+      return `P=${fmtP(calc)}`;
+    }});
+
+  // target
+  nodeGs.select("text.node-target")
+    .attr("x",8).attr("y",51)
+    .text(d=> d._target ? `tgt:${{fmtP(d._target)}}` : (d.type==="IF"?`P=${{fmtP(d.value)}}`:""));
+
+  // gate badge
+  nodeGs.select("text.node-gate")
+    .attr("x", d=>d._w-30).attr("y",14)
+    .attr("class", d=>"node-gate " + ((d.gate||"OR")==="OR"?"gate-or":"gate-and"))
+    .text(d=>d.gate||"OR");
+
+  // flag
+  nodeGs.select("text.node-flag")
+    .attr("x", d=>d._w-30).attr("y",27)
+    .attr("fill", d=>d.flag==="tbc"?"#fde68a":d.flag==="reword"?"#fed7aa":d.flag==="ok"?"#86efac":"transparent")
+    .text(d=>d.flag==="tbc"?"TBC":d.flag==="reword"?"RWD":d.flag==="ok"?"✓":"");
+
+  // collapse button (circle at bottom center)
+  nodeGs.select("circle.collapse-btn")
+    .attr("cx", d=>d._w/2).attr("cy", d=>d._h)
+    .attr("r",7)
+    .attr("fill", d=>(d._hiddenChildren||[]).length||(d.children||[]).length ? "#1e1e3a":"transparent")
+    .attr("stroke", d=>(d._hiddenChildren||[]).length||(d.children||[]).length ? "#334155":"transparent")
+    .style("cursor","pointer")
+    .on("click", (event,d)=>{{ event.stopPropagation(); toggleCollapse(d.id); }});
+
+  nodeGs.select("text.collapse-icon")
+    .attr("x", d=>d._w/2).attr("y", d=>d._h+4)
+    .attr("text-anchor","middle").attr("font-size","8px").attr("fill","#94a3b8")
+    .style("pointer-events","none")
+    .text(d=>{{
+      const hasKids=(d._hiddenChildren||[]).length||(d.children||[]).length;
+      if (!hasKids) return "";
+      return collapsed.has(d.id) ? "▶" : "▼";
+    }});
+}}
+
+function toggleCollapse(id) {{
+  if (collapsed.has(id)) collapsed.delete(id);
+  else collapsed.add(id);
+  render();
+}}
+
+function expandAll() {{ collapsed.clear(); render(); }}
+function collapseAll() {{
+  function addCollapsible(node) {{
+    if ((node.children||[]).length) {{ collapsed.add(node.id); node.children.forEach(addCollapsible); }}
+  }}
+  addCollapsible(treeData);
+  render();
+}}
+
+function nodeClicked(id) {{
+  window.parent.postMessage({{type:"node_selected", nodeId:id}}, "*");
+}}
+
+function zoomIn()  {{ transform.k=Math.min(transform.k*1.3,4); applyTransform(); }}
+function zoomOut() {{ transform.k=Math.max(transform.k/1.3,0.15); applyTransform(); }}
+
+function applyTransform() {{
+  d3.select("g.main").attr("transform",`translate(${{transform.x}},${{transform.y}}) scale(${{transform.k}})`);
+}}
+
+function resetView() {{
+  const visible=getVisible(treeData);
+  computeLayout(visible);
+  const nodes=allNodes(visible);
+  const svgW=document.getElementById("svg").clientWidth||1200;
+  const svgH=document.getElementById("svg").clientHeight||700;
+  const minX=d3.min(nodes,d=>d._x-d._w/2);
+  const maxX=d3.max(nodes,d=>d._x+d._w/2);
+  const minY=d3.min(nodes,d=>d._y);
+  const maxY=d3.max(nodes,d=>d._y+d._h);
+  const tw=maxX-minX, th=maxY-minY;
+  const k=Math.min((svgW-80)/tw, (svgH-80)/th, 1.2);
+  transform.k=k;
+  transform.x=(svgW-tw*k)/2 - minX*k;
+  transform.y=40;
+  applyTransform();
+}}
+
+// ── init ──
+window.addEventListener("load", ()=>{{
+  const svg=d3.select("#svg");
+  svgEl=svg.node();
+
+  svg.append("g").attr("class","main");
+
+  // pan + zoom
+  const zoomBehavior = d3.zoom()
+    .scaleExtent([0.1,4])
+    .on("zoom", (event)=>{{
+      transform={{x:event.transform.x, y:event.transform.y, k:event.transform.k}};
+      d3.select("g.main").attr("transform", event.transform);
+    }});
+  svg.call(zoomBehavior);
+
+  render();
+  setTimeout(resetView, 100);
+}});
+
+// live update from streamlit
+window.addEventListener("message", (e)=>{{
+  if (e.data && e.data.type==="update_tree") {{
+    treeData=e.data.tree;
+    render();
+  }}
+}});
+</script>
+</body>
+</html>
+"""
 
 # ─── sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### ⚠ FTA Tool v2")
+    st.markdown("### ⚠ FTA Tool v3")
     st.divider()
+    st.session_state.project_name = st.text_input("Project", value=st.session_state.project_name)
 
-    st.session_state.project_name = st.text_input("Project Name", value=st.session_state.project_name)
+    # hazard nav
+    st.markdown("**Hazards**")
+    for i,h in enumerate(st.session_state.hazards):
+        hc=calc_node(h); hok=hc is not None and hc<=h["value"]*1.001
+        ind="🟢" if hok else "🔴"
+        if st.button(f"{ind} {h['node_id']} {h['label']}", key=f"hnav_{i}", use_container_width=True):
+            st.session_state.active_h=i; st.session_state.selected_node_id=None; st.rerun()
 
-    st.markdown("**Distribution Mode**")
-    new_mode = st.radio("", ["equal", "weighted"],
-                         index=0 if st.session_state.dist_mode == "equal" else 1,
-                         horizontal=True, key="sidebar_dist")
-    if new_mode != st.session_state.dist_mode:
-        st.session_state.dist_mode = new_mode
-        hazards = get_hazards()
-        for i, h in enumerate(hazards):
-            hazards[i] = redistribute(h, new_mode)
-        set_hazards(hazards)
-        st.rerun()
-
-    if st.session_state.dist_mode == "equal":
-        st.caption("Each SF gets equal share of hazard budget")
-    else:
-        st.caption("Budget split by SF weight")
-
-    st.divider()
-
-    # ── Add hazard ──
-    st.markdown("**Hazards in Project**")
-    hazards = get_hazards()
-    for i, h in enumerate(hazards):
-        hcalc = calc_node(h)
-        hok = hcalc is not None and hcalc <= h["value"] * 1.001
-        indicator = "🟢" if hok else "🔴"
-        if st.button(f"{indicator} {h['node_id']} — {h['label']}", key=f"nav_{i}",
-                     use_container_width=True):
-            st.session_state.active_hazard = i
-            st.rerun()
-
-    if st.button("➕ Add New Hazard", use_container_width=True):
-        n = len(hazards) + 1
-        _sf_counter[0] = 0; _ff_counter[0] = 0; _if_counter[0] = 0
-        new_h = build_default_tree(f"H-{n:02d}", f"Hazard {n}")
-        hazards.append(new_h)
-        set_hazards(hazards)
-        st.session_state.active_hazard = len(hazards) - 1
-        st.rerun()
+    c1,c2=st.columns(2)
+    with c1:
+        if st.button("➕ Hazard", use_container_width=True):
+            n=len(st.session_state.hazards)+1
+            st.session_state.hazards.append(build_default(f"H-{n:02d}",f"Hazard {n}"))
+            st.session_state.active_h=len(st.session_state.hazards)-1
+            st.session_state.selected_node_id=None; st.rerun()
+    with c2:
+        if st.button("🗑 Hazard", use_container_width=True):
+            if len(st.session_state.hazards)>1:
+                st.session_state.hazards.pop(st.session_state.active_h)
+                st.session_state.active_h=max(0,st.session_state.active_h-1)
+                st.session_state.selected_node_id=None; st.rerun()
 
     st.divider()
 
-    # ── Save / Load ──
-    st.markdown("**Save / Load**")
-    save_data = json.dumps({
-        "project": st.session_state.project_name,
-        "saved_at": datetime.now().isoformat(),
-        "dist_mode": st.session_state.dist_mode,
-        "hazards": get_hazards(),
-    }, indent=2)
-    st.download_button("💾 Save Project (JSON)", data=save_data,
-                       file_name=f"{st.session_state.project_name.replace(' ','_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
-                       mime="application/json", use_container_width=True)
+    # dist mode
+    st.markdown("**Distribution**")
+    nm=st.radio("",["equal","weighted"], index=0 if st.session_state.dist_mode=="equal" else 1,
+                horizontal=True, key="dist_radio")
+    if nm!=st.session_state.dist_mode:
+        st.session_state.dist_mode=nm
+        set_tree(redistribute(get_tree(),nm)); st.rerun()
 
-    uploaded = st.file_uploader("📂 Load Project", type="json", label_visibility="collapsed")
+    st.divider()
+
+    # save/load
+    save_data=json.dumps({"project":st.session_state.project_name,
+        "saved_at":datetime.now().isoformat(),
+        "dist_mode":st.session_state.dist_mode,
+        "hazards":st.session_state.hazards},indent=2)
+    st.download_button("💾 Save JSON", data=save_data,
+        file_name=f"{st.session_state.project_name.replace(' ','_')}.json",
+        mime="application/json", use_container_width=True)
+
+    uploaded=st.file_uploader("📂 Load JSON", type="json", label_visibility="collapsed")
     if uploaded:
         try:
-            data = json.load(uploaded)
-            set_hazards(data["hazards"])
-            st.session_state.dist_mode = data.get("dist_mode", "equal")
-            st.session_state.project_name = data.get("project", "Loaded Project")
-            st.session_state.active_hazard = 0
-            st.success("Loaded!")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Error: {e}")
+            d=json.load(uploaded)
+            st.session_state.hazards=d["hazards"]
+            st.session_state.dist_mode=d.get("dist_mode","equal")
+            st.session_state.project_name=d.get("project","Project")
+            st.session_state.active_h=0; st.session_state.selected_node_id=None
+            st.success("Loaded!"); st.rerun()
+        except Exception as e: st.error(str(e))
 
     st.divider()
 
-    # ── Export CSV ──
-    if st.button("📊 Export All to CSV", use_container_width=True):
-        rows = []
-        for h in get_hazards():
-            h_calc = calc_node(h)
-            for sf in h.get("children", []):
-                sf_calc = calc_node(sf)
-                for ff in sf.get("children", []):
-                    ff_calc = calc_node(ff)
-                    for ifn in ff.get("children", []):
-                        rows.append({
-                            "Hazard_ID": h["node_id"], "Hazard": h["label"],
-                            "Hazard_Target": h["value"], "Hazard_Calc": h_calc,
-                            "SF_ID": sf["node_id"], "SF_Label": sf["label"],
-                            "SF_Gate": sf["gate"], "SF_Calc": sf_calc, "SF_Target": sf.get("_target"),
-                            "FF_ID": ff["node_id"], "FF_Label": ff["label"],
-                            "FF_Gate": ff["gate"], "FF_Calc": ff_calc, "FF_Target": ff.get("_target"),
-                            "IF_ID": ifn["node_id"], "IF_Label": ifn["label"],
-                            "IF_Value": ifn.get("value"), "IF_Target": ifn.get("_target"),
-                            "IF_Flag": ifn.get("flag", ""), "IF_Note": ifn.get("note", ""),
-                        })
+    # CSV export
+    if st.button("📊 Export CSV", use_container_width=True):
+        rows=[]
+        for h in st.session_state.hazards:
+            hc2=calc_node(h)
+            for sf in h.get("children",[]):
+                sfc=calc_node(sf)
+                for ff in sf.get("children",[]):
+                    ffc=calc_node(ff)
+                    for ifn in ff.get("children",[]):
+                        rows.append({"Hazard":h["node_id"],"H_Label":h["label"],"H_Target":h["value"],"H_Calc":hc2,
+                            "SF":sf["node_id"],"SF_Label":sf["label"],"SF_Gate":sf["gate"],"SF_Calc":sfc,"SF_Tgt":sf.get("_target"),
+                            "FF":ff["node_id"],"FF_Label":ff["label"],"FF_Gate":ff["gate"],"FF_Calc":ffc,"FF_Tgt":ff.get("_target"),
+                            "IF":ifn["node_id"],"IF_Label":ifn["label"],"IF_Val":ifn.get("value"),"IF_Tgt":ifn.get("_target"),
+                            "Flag":ifn.get("flag",""),"Note":ifn.get("note","")})
         if rows:
-            df = pd.DataFrame(rows)
-            st.download_button("⬇ Download CSV", df.to_csv(index=False),
-                               file_name=f"{st.session_state.project_name}_export.csv",
-                               mime="text/csv", use_container_width=True)
-
-    st.divider()
-    with st.expander("ℹ️ Help"):
-        st.markdown("""
-**Node IDs**: Edit inline (SF-01, FF-42, IF-100)
-**Gates**: OR = sum · AND = product
-**Flags**: Mark nodes as TBC / Reword / Confirmed
-**Targets**: Flow top-down from hazard target
-**Calc**: Bottom-up from IF values you enter
-**Green ✓** = within budget · **Red ✗** = over
-        """)
+            df=pd.DataFrame(rows)
+            st.download_button("⬇ Download",df.to_csv(index=False),
+                file_name=f"{st.session_state.project_name}_export.csv",mime="text/csv",use_container_width=True)
 
 # ─── main area ────────────────────────────────────────────────────────────────
-hazards = get_hazards()
-if not hazards:
-    st.warning("No hazards yet. Add one from the sidebar.")
-    st.stop()
+tree=get_tree()
+hcalc=calc_node(tree); hok=hcalc is not None and hcalc<=tree["value"]*1.001
 
-idx = min(st.session_state.active_hazard, len(hazards) - 1)
-tree = hazards[idx]
+st.markdown(f"## ⚠ {st.session_state.project_name} — {tree.get('node_id','')} {tree.get('label','')}")
 
-st.markdown(f"## ⚠ {st.session_state.project_name}")
+# top stats
+sc1,sc2,sc3,sc4,sc5=st.columns(5)
+sc1.metric("Hazard Target", fmt(tree["value"]))
+color="✅" if hok else "❌"
+sc2.metric("Calculated", f"{color} {fmt(hcalc)}")
+pct=f"{hcalc/tree['value']*100:.1f}%" if hcalc and tree["value"] else "–"
+sc3.metric("Budget Used", pct)
+sc4.metric("System Failures", len(tree.get("children",[])))
+ff_t=sum(len(sf.get("children",[])) for sf in tree.get("children",[]))
+sc5.metric("Following Failures", ff_t)
 
-# ── tabs: Editor / Audit Trail ──
-tab_editor, tab_audit = st.tabs(["🌲 Tree Editor", "🧮 Calculation Audit"])
+st.divider()
+
+tab_tree, tab_edit, tab_audit = st.tabs(["🌲 Visual Tree", "✏️ Edit Panel", "🧮 Audit Trail"])
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 1: EDITOR
+# TAB 1: VISUAL TREE
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_editor:
-    tree_changed = False
+with tab_tree:
+    st.caption("Click any node to select it · Drag to pan · Scroll to zoom · Use buttons for zoom/collapse")
 
-    # ── HAZARD CARD ────────────────────────────────────────────────────────────
-    hazard_calc = calc_node(tree)
-    hazard_ok = hazard_calc is not None and hazard_calc <= tree["value"] * 1.001
-
-    st.markdown('<div class="hazard-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">HAZARD</div>', unsafe_allow_html=True)
-
-    hc1, hc2, hc3, hc4, hc5, hc6 = st.columns([1, 2, 1.5, 1.2, 1.5, 1])
-    with hc1:
-        new_nid = st.text_input("ID", value=tree.get("node_id","H-01"), key="h_nid", label_visibility="visible")
-        if new_nid != tree.get("node_id"):
-            tree["node_id"] = new_nid; tree_changed = True
-    with hc2:
-        new_lbl = st.text_input("Hazard Label", value=tree.get("label",""), key="h_lbl", label_visibility="visible")
-        if new_lbl != tree.get("label"):
-            tree["label"] = new_lbl; tree_changed = True
-    with hc3:
-        new_val = st.number_input("Target P", value=float(tree.get("value",1e-7)), format="%.2e", step=1e-8, key="h_val", label_visibility="visible")
-        if abs(new_val - tree.get("value",1e-7)) > 1e-20:
-            tree["value"] = new_val; tree_changed = True
-    with hc4:
-        gate_opts = ["OR","AND"]
-        hgate = st.selectbox("Gate", gate_opts, index=gate_opts.index(tree.get("gate","OR")), key="h_gate", label_visibility="visible")
-        if hgate != tree.get("gate"):
-            tree["gate"] = hgate; tree_changed = True
-    with hc5:
-        color = "ok-color" if hazard_ok else "over-color"
-        badge = status_html(hazard_calc, tree["value"])
-        st.markdown(f'<div style="margin-top:24px"><span class="big-metric {color}">{fmt(hazard_calc)}</span> {badge}</div>', unsafe_allow_html=True)
-        if hazard_calc and tree["value"]:
-            pct = hazard_calc/tree["value"]*100
-            pc = "ok-color" if pct<=100 else "over-color"
-            st.markdown(f'<span class="mono muted-color" style="font-size:11px">budget: <span class="{pc}">{pct:.1f}%</span></span>', unsafe_allow_html=True)
-    with hc6:
-        new_flag = st.selectbox("Flag", list(FLAG_OPTIONS.keys()),
-                                format_func=lambda x: FLAG_OPTIONS[x],
-                                index=list(FLAG_OPTIONS.keys()).index(tree.get("flag","none")),
-                                key="h_flag", label_visibility="visible")
-        if new_flag != tree.get("flag"):
-            tree["flag"] = new_flag; tree_changed = True
-
-    h_note = st.text_input("Notes", value=tree.get("note",""), key="h_note", placeholder="Optional notes...", label_visibility="visible")
-    if h_note != tree.get("note"):
-        tree["note"] = h_note; tree_changed = True
-
-    # stats row
-    sfs = tree.get("children",[])
-    ff_total = sum(len(sf.get("children",[])) for sf in sfs)
-    if_total = sum(len(ff.get("children",[])) for sf in sfs for ff in sf.get("children",[]))
-    st.markdown(f"""
-    <div style="display:flex;gap:24px;margin-top:10px;padding-top:10px;border-top:1px solid #1e1e3a">
-      <span class="mono" style="font-size:11px;color:#475569">SFs: <strong style="color:#38bdf8">{len(sfs)}</strong></span>
-      <span class="mono" style="font-size:11px;color:#475569">FFs: <strong style="color:#4ade80">{ff_total}</strong></span>
-      <span class="mono" style="font-size:11px;color:#475569">IFs: <strong style="color:#fbbf24">{if_total}</strong></span>
-      <span class="mono" style="font-size:11px;color:#475569">Mode: <strong style="color:#a78bfa">{st.session_state.dist_mode.upper()}</strong></span>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ── action buttons ─────────────────────────────────────────────────────────
-    ba1, ba2, ba3, ba4 = st.columns([2,2,2,2])
-    with ba1:
-        if st.button("➕ Add System Failure", type="primary", use_container_width=True):
-            _sf_counter[0] = max(int(sf.get("node_id","SF-00").split("-")[-1]) for sf in sfs) if sfs else 0
-            tree["children"].append(make_sf())
-            st.session_state.dist_mode = "equal"
-            tree = redistribute(tree, "equal")
-            hazards[idx] = tree; set_hazards(hazards)
-            st.rerun()
-    with ba2:
-        if st.button("🔄 Recalculate Targets", use_container_width=True):
-            tree = redistribute(tree, st.session_state.dist_mode)
-            hazards[idx] = tree; set_hazards(hazards)
-            st.rerun()
-    with ba3:
-        if st.button("🗑 Delete This Hazard", use_container_width=True):
-            if len(hazards) > 1:
-                hazards.pop(idx)
-                st.session_state.active_hazard = max(0, idx-1)
-                set_hazards(hazards)
-                st.rerun()
-            else:
-                st.warning("Cannot delete the last hazard.")
-    with ba4:
-        if st.button("↔ Switch to Weighted" if st.session_state.dist_mode=="equal" else "↔ Switch to Equal",
-                     use_container_width=True):
-            new_m = "weighted" if st.session_state.dist_mode=="equal" else "equal"
-            st.session_state.dist_mode = new_m
-            tree = redistribute(tree, new_m)
-            hazards[idx] = tree; set_hazards(hazards)
-            st.rerun()
+    # Render the D3 tree
+    tree_html = build_tree_html(tree, st.session_state.selected_node_id)
+    components.html(tree_html, height=680, scrolling=False)
 
     st.divider()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # SF LOOP
-    # ══════════════════════════════════════════════════════════════════════════
-    sfs = tree.get("children", [])
-    for sf_idx, sf in enumerate(sfs):
-        sf_calc = calc_node(sf)
-        sf_ok = sf_calc is not None and sf.get("_target") and sf_calc <= sf["_target"]*1.001
-        sf_pct = f"{sf_calc/sf['_target']*100:.0f}%" if sf_calc and sf.get("_target") else ""
+    # Add nodes panel below tree
+    st.markdown("**Quick Add Nodes**")
+    qa1,qa2,qa3,qa4,qa5 = st.columns(5)
+    with qa1:
+        if st.button("➕ Add SF", use_container_width=True, type="primary"):
+            n=len(tree.get("children",[]))+1
+            tree=add_child(tree, tree["id"], make_sf(f"SF-{n:02d}",f"System Failure {n}"))
+            st.session_state.dist_mode="equal"
+            tree=redistribute(tree,"equal"); set_tree(tree); st.rerun()
+    with qa2:
+        sel=st.session_state.selected_node_id
+        sel_node=find_node(tree,sel) if sel else None
+        can_add_ff = sel_node and sel_node["type"]=="SF"
+        if st.button("➕ Add FF to selected SF", use_container_width=True, disabled=not can_add_ff):
+            n=len(sel_node.get("children",[]))+1
+            new_ff=make_ff(f"FF-{n:02d}",f"Following Failure {n}")
+            tree=add_child(tree, sel, new_ff)
+            tree=redistribute(tree,st.session_state.dist_mode); set_tree(tree); st.rerun()
+    with qa3:
+        can_add_if = sel_node and sel_node["type"]=="FF"
+        if st.button("➕ Add IF to selected FF", use_container_width=True, disabled=not can_add_if):
+            n=len(sel_node.get("children",[]))+1
+            new_if=make_if(f"IF-{n:03d}",f"Initial Failure {n}")
+            tree=add_child(tree, sel, new_if)
+            tree=redistribute(tree,st.session_state.dist_mode); set_tree(tree); st.rerun()
+    with qa4:
+        can_del = sel_node and sel_node["type"] in ("SF","FF","IF")
+        if st.button("🗑 Delete selected", use_container_width=True, disabled=not can_del):
+            tree=delete_node_from_tree(tree, sel)
+            tree=redistribute(tree,st.session_state.dist_mode)
+            st.session_state.selected_node_id=None; set_tree(tree); st.rerun()
+    with qa5:
+        if st.button("🔄 Recalculate", use_container_width=True):
+            tree=redistribute(tree,st.session_state.dist_mode); set_tree(tree); st.rerun()
 
-        with st.expander(
-            f"{'🟢' if sf_ok else '🔴'}  {sf.get('node_id','SF-??')}  ·  {sf.get('label','')}  "
-            f"·  calc: {fmt(sf_calc)}  ·  target: {fmt(sf.get('_target'))}  {sf_pct}",
-            expanded=True
-        ):
-            st.markdown('<div class="sf-card">', unsafe_allow_html=True)
-
-            # SF header
-            sfc1,sfc2,sfc3,sfc4,sfc5,sfc6,sfc7 = st.columns([1,2.5,1.2,1.2,1.2,1.5,0.6])
-            with sfc1:
-                new_sf_nid = st.text_input("ID", value=sf.get("node_id",""), key=f"sf_nid_{sf['id']}", label_visibility="visible")
-                if new_sf_nid != sf.get("node_id"): sfs[sf_idx]["node_id"]=new_sf_nid; tree_changed=True
-            with sfc2:
-                new_sf_lbl = st.text_input("Label", value=sf.get("label",""), key=f"sf_lbl_{sf['id']}", label_visibility="visible")
-                if new_sf_lbl != sf.get("label"): sfs[sf_idx]["label"]=new_sf_lbl; tree_changed=True
-            with sfc3:
-                sf_gate = st.selectbox("Gate", ["OR","AND"], index=0 if sf.get("gate","OR")=="OR" else 1, key=f"sf_gate_{sf['id']}", label_visibility="visible")
-                if sf_gate != sf.get("gate"): sfs[sf_idx]["gate"]=sf_gate; tree_changed=True
-            with sfc4:
-                if st.session_state.dist_mode == "weighted":
-                    new_w = st.number_input("Weight", value=float(sf.get("weight",1)), min_value=0.01, step=0.1, key=f"sf_w_{sf['id']}", label_visibility="visible")
-                    if new_w != sf.get("weight"): sfs[sf_idx]["weight"]=new_w; tree_changed=True
-                else:
-                    st.markdown('<div style="margin-top:24px"><span class="mono muted-color" style="font-size:11px">weight: 1</span></div>', unsafe_allow_html=True)
-            with sfc5:
-                sf_flag = st.selectbox("Flag", list(FLAG_OPTIONS.keys()), format_func=lambda x:FLAG_OPTIONS[x],
-                                       index=list(FLAG_OPTIONS.keys()).index(sf.get("flag","none")),
-                                       key=f"sf_flag_{sf['id']}", label_visibility="visible")
-                if sf_flag != sf.get("flag"): sfs[sf_idx]["flag"]=sf_flag; tree_changed=True
-            with sfc6:
-                color = "ok-color" if sf_ok else "over-color"
-                st.markdown(f'<div style="margin-top:24px"><span class="prob-value {color}">{fmt(sf_calc)}</span><br><span class="prob-target">tgt: {fmt(sf.get("_target"))}</span></div>', unsafe_allow_html=True)
-            with sfc7:
-                st.markdown('<div style="margin-top:24px">', unsafe_allow_html=True)
-                if st.button("🗑", key=f"del_sf_{sf['id']}", help="Delete SF"):
-                    tree["children"] = [s for s in sfs if s["id"]!=sf["id"]]
-                    tree = redistribute(tree, st.session_state.dist_mode)
-                    hazards[idx]=tree; set_hazards(hazards); st.rerun()
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            sf_note = st.text_input("SF Note", value=sf.get("note",""), key=f"sf_note_{sf['id']}", placeholder="Notes...", label_visibility="collapsed")
-            if sf_note != sf.get("note"): sfs[sf_idx]["note"]=sf_note; tree_changed=True
-
-            st.markdown("---")
-
-            # ══════════════════════════════════════════════════════════════════
-            # FF LOOP
-            # ══════════════════════════════════════════════════════════════════
-            ffs = sf.get("children", [])
-            for ff_idx, ff in enumerate(ffs):
-                ff_calc = calc_node(ff)
-                ff_ok = ff_calc is not None and ff.get("_target") and ff_calc <= ff["_target"]*1.001
-
-                st.markdown('<div class="ff-card">', unsafe_allow_html=True)
-                ffc1,ffc2,ffc3,ffc4,ffc5,ffc6,ffc7 = st.columns([1,2.5,1.2,1.2,1.5,1.5,0.6])
-                with ffc1:
-                    new_ff_nid = st.text_input("ID", value=ff.get("node_id",""), key=f"ff_nid_{ff['id']}", label_visibility="visible")
-                    if new_ff_nid != ff.get("node_id"): sfs[sf_idx]["children"][ff_idx]["node_id"]=new_ff_nid; tree_changed=True
-                with ffc2:
-                    new_ff_lbl = st.text_input("Label", value=ff.get("label",""), key=f"ff_lbl_{ff['id']}", label_visibility="visible")
-                    if new_ff_lbl != ff.get("label"): sfs[sf_idx]["children"][ff_idx]["label"]=new_ff_lbl; tree_changed=True
-                with ffc3:
-                    ff_gate = st.selectbox("Gate", ["OR","AND"], index=0 if ff.get("gate","OR")=="OR" else 1, key=f"ff_gate_{ff['id']}", label_visibility="visible")
-                    if ff_gate != ff.get("gate"): sfs[sf_idx]["children"][ff_idx]["gate"]=ff_gate; tree_changed=True
-                with ffc4:
-                    ff_flag = st.selectbox("Flag", list(FLAG_OPTIONS.keys()), format_func=lambda x:FLAG_OPTIONS[x],
-                                           index=list(FLAG_OPTIONS.keys()).index(ff.get("flag","none")),
-                                           key=f"ff_flag_{ff['id']}", label_visibility="visible")
-                    if ff_flag != ff.get("flag"): sfs[sf_idx]["children"][ff_idx]["flag"]=ff_flag; tree_changed=True
-                with ffc5:
-                    color = "ok-color" if ff_ok else "over-color"
-                    st.markdown(f'<span class="badge-ff">FF</span> <span class="prob-value {color}">{fmt(ff_calc)}</span><br><span class="prob-target">tgt: {fmt(ff.get("_target"))}</span>', unsafe_allow_html=True)
-                with ffc6:
-                    if st.button(f"➕ Add IF", key=f"add_if_{ff['id']}", use_container_width=True):
-                        n = len(ff.get("children",[]))
-                        sfs[sf_idx]["children"][ff_idx]["children"].append(make_if(label=f"Initial Failure {n+1}"))
-                        tree_changed = True
-                with ffc7:
-                    if st.button("🗑", key=f"del_ff_{ff['id']}", help="Delete FF"):
-                        sfs[sf_idx]["children"] = [f for f in ffs if f["id"]!=ff["id"]]
-                        tree_changed = True
-
-                ff_note = st.text_input("FF Note", value=ff.get("note",""), key=f"ff_note_{ff['id']}", placeholder="Notes...", label_visibility="collapsed")
-                if ff_note != ff.get("note"): sfs[sf_idx]["children"][ff_idx]["note"]=ff_note; tree_changed=True
-
-                # ══════════════════════════════════════════════════════════════
-                # IF LOOP
-                # ══════════════════════════════════════════════════════════════
-                ifs = ff.get("children", [])
-                if ifs:
-                    n_cols = min(len(ifs), 3)
-                    if_cols = st.columns(n_cols)
-                    for if_idx, ifn in enumerate(ifs):
-                        with if_cols[if_idx % n_cols]:
-                            st.markdown('<div class="if-card">', unsafe_allow_html=True)
-
-                            ifc1, ifc2 = st.columns([1,0.3])
-                            with ifc1:
-                                new_if_nid = st.text_input("ID", value=ifn.get("node_id",""), key=f"if_nid_{ifn['id']}", label_visibility="visible")
-                                if new_if_nid != ifn.get("node_id"):
-                                    sfs[sf_idx]["children"][ff_idx]["children"][if_idx]["node_id"]=new_if_nid; tree_changed=True
-                            with ifc2:
-                                st.markdown('<div style="margin-top:24px">', unsafe_allow_html=True)
-                                if st.button("✕", key=f"del_if_{ifn['id']}", help="Delete IF"):
-                                    sfs[sf_idx]["children"][ff_idx]["children"] = [i for i in ifs if i["id"]!=ifn["id"]]
-                                    tree_changed = True
-                                st.markdown('</div>', unsafe_allow_html=True)
-
-                            new_if_lbl = st.text_input("Label", value=ifn.get("label",""), key=f"if_lbl_{ifn['id']}", label_visibility="visible")
-                            if new_if_lbl != ifn.get("label"):
-                                sfs[sf_idx]["children"][ff_idx]["children"][if_idx]["label"]=new_if_lbl; tree_changed=True
-
-                            new_if_val = st.number_input("P =", value=float(ifn.get("value") or 1e-5),
-                                                          format="%.2e", step=1e-6,
-                                                          key=f"if_val_{ifn['id']}", label_visibility="visible")
-                            if new_if_val != ifn.get("value"):
-                                sfs[sf_idx]["children"][ff_idx]["children"][if_idx]["value"]=new_if_val; tree_changed=True
-
-                            if_flag = st.selectbox("Flag", list(FLAG_OPTIONS.keys()), format_func=lambda x:FLAG_OPTIONS[x],
-                                                    index=list(FLAG_OPTIONS.keys()).index(ifn.get("flag","none")),
-                                                    key=f"if_flag_{ifn['id']}", label_visibility="collapsed")
-                            if if_flag != ifn.get("flag"):
-                                sfs[sf_idx]["children"][ff_idx]["children"][if_idx]["flag"]=if_flag; tree_changed=True
-
-                            if ifn.get("_target"):
-                                if_ok = new_if_val <= ifn["_target"]*1.001
-                                c = "ok-color" if if_ok else "over-color"
-                                st.markdown(f'<span class="prob-target">tgt: <span class="{c}">{fmt(ifn["_target"])}</span></span>', unsafe_allow_html=True)
-
-                            if_note = st.text_input("Note", value=ifn.get("note",""), key=f"if_note_{ifn['id']}", placeholder="Notes...", label_visibility="collapsed")
-                            if if_note != ifn.get("note"):
-                                sfs[sf_idx]["children"][ff_idx]["children"][if_idx]["note"]=if_note; tree_changed=True
-
-                            st.markdown('</div>', unsafe_allow_html=True)
-
-                st.markdown('</div>', unsafe_allow_html=True)  # ff-card
-
-            # add FF button
-            aff1, aff2 = st.columns([2,4])
-            with aff1:
-                if st.button(f"➕ Add Following Failure", key=f"add_ff_{sf['id']}", use_container_width=True):
-                    n = len(ffs)
-                    _ff_counter[0] = max(int(f.get("node_id","FF-00").split("-")[-1]) for f in ffs) if ffs else 0
-                    sfs[sf_idx]["children"].append(make_ff(label=f"Following Failure {n+1}"))
-                    tree_changed = True
-
-            st.markdown('</div>', unsafe_allow_html=True)  # sf-card
-
-    # ── apply changes ──────────────────────────────────────────────────────────
-    if tree_changed:
-        tree["children"] = sfs
-        tree = redistribute(tree, st.session_state.dist_mode)
-        hazards[idx] = tree
-        set_hazards(hazards)
-        st.rerun()
+    # Show selected node info
+    if sel_node:
+        sc=calc_node(sel_node)
+        sok=sc is not None and sel_node.get("_target") and sc<=sel_node["_target"]*1.001
+        st.markdown(f"""
+        <div style="background:#0f0f20;border:1px solid #334155;border-radius:10px;padding:12px;margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:12px;">
+        <strong style="color:#e2e8f0">{sel_node.get('node_id','')} — {sel_node.get('label','')}</strong><br>
+        <span style="color:#64748b">Type: {sel_node['type']} · Gate: {sel_node.get('gate','OR')}</span><br>
+        <span style="color:{'#4ade80' if sok else '#f87171'}">Calc: {fmt(sc)}</span>
+        <span style="color:#64748b"> · Target: {fmt(sel_node.get('_target'))}</span>
+        {"<br><span style='color:#fbbf24'>⚠ " + FLAG_OPTIONS.get(sel_node.get('flag','none'),'') + "</span>" if sel_node.get('flag','none')!='none' else ""}
+        </div>
+        """, unsafe_allow_html=True)
+        st.info("👉 Go to **Edit Panel** tab to edit this node's values")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 2: AUDIT TRAIL
+# TAB 2: EDIT PANEL
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_edit:
+    sel_id=st.session_state.selected_node_id
+    sel_node=find_node(tree,sel_id) if sel_id else None
+
+    col_tree_edit, col_node_edit = st.columns([1,1])
+
+    with col_tree_edit:
+        st.markdown("#### 🌲 Tree Structure")
+        st.caption("Click a node in the Visual Tree tab first, then edit here")
+
+        # Hazard settings
+        with st.expander(f"⚠ {tree.get('node_id','')} — {tree.get('label','')} (HAZARD)", expanded=True):
+            e1,e2=st.columns(2)
+            with e1:
+                nid=st.text_input("Hazard ID", value=tree.get("node_id",""), key="edit_h_nid")
+                if nid!=tree.get("node_id"): tree=update_node_in_tree(tree,tree["id"],{"node_id":nid}); set_tree(tree); st.rerun()
+            with e2:
+                lbl=st.text_input("Label", value=tree.get("label",""), key="edit_h_lbl")
+                if lbl!=tree.get("label"): tree=update_node_in_tree(tree,tree["id"],{"label":lbl}); set_tree(tree); st.rerun()
+            e3,e4=st.columns(2)
+            with e3:
+                tval=st.number_input("Target P", value=float(tree.get("value",1e-7)), format="%.2e", step=1e-8, key="edit_h_val")
+                if abs(tval-tree.get("value",1e-7))>1e-20:
+                    tree=update_node_in_tree(tree,tree["id"],{"value":tval})
+                    tree=redistribute(tree,st.session_state.dist_mode); set_tree(tree); st.rerun()
+            with e4:
+                hg=st.selectbox("Gate",["OR","AND"],index=0 if tree.get("gate","OR")=="OR" else 1, key="edit_h_gate")
+                if hg!=tree.get("gate"):
+                    tree=update_node_in_tree(tree,tree["id"],{"gate":hg})
+                    tree=redistribute(tree,st.session_state.dist_mode); set_tree(tree); st.rerun()
+            hn=st.text_input("Notes", value=tree.get("note",""), key="edit_h_note")
+            if hn!=tree.get("note"): tree=update_node_in_tree(tree,tree["id"],{"note":hn}); set_tree(tree); st.rerun()
+
+    with col_node_edit:
+        st.markdown("#### ✏️ Selected Node Editor")
+        if not sel_node:
+            st.info("Click any node in the **Visual Tree** tab to select it, then edit its properties here.")
+            st.markdown("""
+            **How to select a node:**
+            1. Go to 🌲 Visual Tree tab
+            2. Click on any SF / FF / IF node
+            3. Come back here to edit
+            """)
+        else:
+            t=sel_node["type"]
+            color_map={"SF":"#0ea5e9","FF":"#16a34a","IF":"#d97706","HAZARD":"#7c3aed"}
+            st.markdown(f'<div style="background:#0f0f20;border-left:3px solid {color_map.get(t,"#666")};border-radius:8px;padding:12px;margin-bottom:12px;">', unsafe_allow_html=True)
+            st.markdown(f"**Editing: `{sel_node.get('node_id','')}` — {t}**")
+
+            n1,n2=st.columns(2)
+            with n1:
+                new_nid=st.text_input("Node ID", value=sel_node.get("node_id",""), key=f"sel_nid")
+            with n2:
+                new_lbl=st.text_input("Label", value=sel_node.get("label",""), key=f"sel_lbl")
+
+            n3,n4=st.columns(2)
+            with n3:
+                new_gate=st.selectbox("Gate",["OR","AND"], index=0 if sel_node.get("gate","OR")=="OR" else 1, key="sel_gate")
+            with n4:
+                new_flag=st.selectbox("Flag", list(FLAG_OPTIONS.keys()),
+                    format_func=lambda x:FLAG_OPTIONS[x],
+                    index=list(FLAG_OPTIONS.keys()).index(sel_node.get("flag","none")),
+                    key="sel_flag")
+
+            if t=="IF":
+                new_val=st.number_input("Probability P =", value=float(sel_node.get("value") or 1e-5),
+                    format="%.2e", step=1e-6, key="sel_val")
+            elif t=="SF" and st.session_state.dist_mode=="weighted":
+                new_weight=st.number_input("Weight", value=float(sel_node.get("weight",1)),
+                    min_value=0.01, step=0.1, key="sel_weight")
+
+            new_note=st.text_area("Notes", value=sel_node.get("note",""), key="sel_note", height=60)
+
+            # calc display
+            sc=calc_node(sel_node); tgt=sel_node.get("_target")
+            sok=sc is not None and tgt and sc<=tgt*1.001
+            st.markdown(f"""
+            <div style="display:flex;gap:16px;margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:11px;">
+              <span style="color:{'#4ade80' if sok else '#f87171'}">Calc: <strong>{fmt(sc)}</strong></span>
+              <span style="color:#64748b">Target: {fmt(tgt)}</span>
+              <span>{"✓ OK" if sok else "✗ OVER"}</span>
+            </div>
+            """, unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            if st.button("💾 Apply Changes", type="primary", use_container_width=True, key="apply_node"):
+                patch={"node_id":new_nid,"label":new_lbl,"gate":new_gate,"flag":new_flag,"note":new_note}
+                if t=="IF": patch["value"]=new_val
+                if t=="SF" and st.session_state.dist_mode=="weighted": patch["weight"]=new_weight
+                tree=update_node_in_tree(tree,sel_id,patch)
+                tree=redistribute(tree,st.session_state.dist_mode)
+                set_tree(tree); st.rerun()
+
+            if t in ("SF","FF","IF"):
+                st.markdown("---")
+                d1,d2=st.columns(2)
+                with d1:
+                    if t=="SF" and st.button("➕ Add FF inside", use_container_width=True):
+                        n=len(sel_node.get("children",[]))+1
+                        tree=add_child(tree,sel_id,make_ff(f"FF-{n:02d}",f"Following Failure {n}"))
+                        tree=redistribute(tree,st.session_state.dist_mode); set_tree(tree); st.rerun()
+                    if t=="FF" and st.button("➕ Add IF inside", use_container_width=True):
+                        n=len(sel_node.get("children",[]))+1
+                        tree=add_child(tree,sel_id,make_if(f"IF-{n:03d}",f"Initial Failure {n}"))
+                        tree=redistribute(tree,st.session_state.dist_mode); set_tree(tree); st.rerun()
+                with d2:
+                    if st.button("🗑 Delete node", use_container_width=True):
+                        tree=delete_node_from_tree(tree,sel_id)
+                        tree=redistribute(tree,st.session_state.dist_mode)
+                        st.session_state.selected_node_id=None; set_tree(tree); st.rerun()
+
+    # node selector fallback
+    st.divider()
+    st.markdown("#### 🔍 Select Node by ID (if tree click doesn't register)")
+    all_nodes_flat=[]
+    def flatten(node):
+        all_nodes_flat.append((node["id"], f"{node.get('node_id','')} — {node.get('label','')} [{node['type']}]"))
+        for c in node.get("children",[]): flatten(c)
+    flatten(tree)
+    node_map={v:k for k,v in all_nodes_flat}
+    sel_label=next((v for k,v in all_nodes_flat if k==st.session_state.selected_node_id),all_nodes_flat[0][1] if all_nodes_flat else "")
+    chosen=st.selectbox("Select node", [v for _,v in all_nodes_flat], index=[v for _,v in all_nodes_flat].index(sel_label) if sel_label in [v for _,v in all_nodes_flat] else 0, key="node_selector")
+    if st.button("Select this node", use_container_width=True):
+        st.session_state.selected_node_id=node_map.get(chosen); st.rerun()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 3: AUDIT TRAIL
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_audit:
-    tree = hazards[idx]
     st.markdown("### 🧮 Calculation Audit Trail")
-    st.caption("This mirrors the blue calculation box in your FTA diagrams — full step-by-step formula.")
-
-    audit_text = build_audit_trail(tree)
-    st.markdown('<div class="audit-card">', unsafe_allow_html=True)
-    st.code(audit_text, language=None)
-    st.markdown('</div>', unsafe_allow_html=True)
+    lines=[]
+    hcalc2=calc_node(tree)
+    lines.append(f"{'─'*60}")
+    lines.append(f"PROJECT  : {st.session_state.project_name}")
+    lines.append(f"HAZARD   : {tree.get('node_id','')}  {tree.get('label','')}")
+    lines.append(f"TARGET   : {fmt(tree.get('value'))}")
+    lines.append(f"GATE     : {tree.get('gate','OR')}")
+    lines.append(f"{'─'*60}")
+    for sf in tree.get("children",[]):
+        sfc=calc_node(sf); sok2="✓" if sfc and sf.get("_target") and sfc<=sf["_target"]*1.001 else "✗"
+        lines.append(f"\n  {sf.get('node_id','SF-??')}  {sf.get('label','')}  [gate:{sf.get('gate','OR')}]")
+        lines.append(f"  calc:{fmt(sfc)}  target:{fmt(sf.get('_target'))}  {sok2}")
+        if sf.get("note"): lines.append(f"  note: {sf['note']}")
+        for ff in sf.get("children",[]):
+            ffc=calc_node(ff); fok="✓" if ffc and ff.get("_target") and ffc<=ff["_target"]*1.001 else "✗"
+            lines.append(f"    ├─ {ff.get('node_id','FF-??')}  {ff.get('label','')}  [gate:{ff.get('gate','OR')}]")
+            lines.append(f"    │  calc:{fmt(ffc)}  tgt:{fmt(ff.get('_target'))}  {fok}")
+            for ifn in ff.get("children",[]):
+                ifv=ifn.get("value"); ift=ifn.get("_target")
+                iok="✓" if ifv and ift and ifv<=ift*1.001 else "✗"
+                flag_str=f"[{ifn.get('flag','')}]" if ifn.get("flag","none")!="none" else ""
+                lines.append(f"    │  └─ {ifn.get('node_id','IF-??')}  {ifn.get('label','')}  P={fmt(ifv)}  tgt:{fmt(ift)}  {iok} {flag_str}")
+    lines.append(f"\n{'─'*60}")
+    lines.append(f"TOTAL CALC  : {fmt(hcalc2)}")
+    lines.append(f"TARGET      : {fmt(tree.get('value'))}")
+    if hcalc2 and tree.get("value"):
+        pct2=hcalc2/tree["value"]*100
+        lines.append(f"BUDGET USED : {pct2:.1f}%  {'✓ WITHIN TARGET' if pct2<=100 else '✗ EXCEEDS TARGET'}")
+    st.code("\n".join(lines), language=None)
 
     st.divider()
-    st.markdown("### 📋 Node Summary Table")
-
-    rows = []
+    st.markdown("### 📋 Full Node Table")
+    rows=[]
     for sf in tree.get("children",[]):
-        sf_calc = calc_node(sf)
+        sfc=calc_node(sf)
         for ff in sf.get("children",[]):
-            ff_calc = calc_node(ff)
+            ffc=calc_node(ff)
             for ifn in ff.get("children",[]):
-                if_val = ifn.get("value")
-                if_tgt = ifn.get("_target")
-                rows.append({
-                    "SF ID": sf.get("node_id",""), "SF Label": sf.get("label",""),
-                    "SF Calc": fmt(sf_calc), "SF Target": fmt(sf.get("_target")),
-                    "SF OK": "✓" if sf_calc and sf.get("_target") and sf_calc<=sf["_target"]*1.001 else "✗",
-                    "FF ID": ff.get("node_id",""), "FF Label": ff.get("label",""),
-                    "FF Calc": fmt(ff_calc), "FF Target": fmt(ff.get("_target")),
-                    "FF Gate": ff.get("gate","OR"),
-                    "IF ID": ifn.get("node_id",""), "IF Label": ifn.get("label",""),
-                    "IF Value": fmt(if_val), "IF Target": fmt(if_tgt),
-                    "IF OK": "✓" if if_val and if_tgt and if_val<=if_tgt*1.001 else "✗",
-                    "Flag": FLAG_OPTIONS.get(ifn.get("flag","none"),""),
-                    "Note": ifn.get("note",""),
-                })
+                ifv=ifn.get("value"); ift=ifn.get("_target")
+                rows.append({"SF":sf.get("node_id"),"SF Label":sf.get("label"),"SF Calc":fmt(sfc),"SF Tgt":fmt(sf.get("_target")),
+                    "FF":ff.get("node_id"),"FF Label":ff.get("label"),"FF Gate":ff.get("gate"),"FF Calc":fmt(ffc),
+                    "IF":ifn.get("node_id"),"IF Label":ifn.get("label"),"IF P":fmt(ifv),"IF Tgt":fmt(ift),
+                    "OK":"✓" if ifv and ift and ifv<=ift*1.001 else "✗",
+                    "Flag":FLAG_OPTIONS.get(ifn.get("flag","none"),""),"Note":ifn.get("note","")})
     if rows:
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, height=400)
-        st.download_button("⬇ Download This Hazard CSV",
-                           data=df.to_csv(index=False),
-                           file_name=f"{tree.get('node_id','hazard')}_audit.csv",
-                           mime="text/csv")
-    else:
-        st.info("No IF nodes yet — add some in the Tree Editor tab.")
+        df=pd.DataFrame(rows)
+        st.dataframe(df,use_container_width=True,height=350)
+        st.download_button("⬇ Download CSV",df.to_csv(index=False),
+            file_name=f"{tree.get('node_id','hazard')}_audit.csv",mime="text/csv")
